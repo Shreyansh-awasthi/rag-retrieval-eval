@@ -22,16 +22,15 @@ The project has two tools:
 7. [Tool 2: retrieval evaluation](#tool-2-retrieval-evaluation)
 8. [The retrievers](#the-retrievers)
 9. [Metrics explained](#metrics-explained)
-10. [Example results](#example-results)
-11. [How to read your results](#how-to-read-your-results)
-12. [Tuning guide](#tuning-guide)
-13. [Using your own documents](#using-your-own-documents)
-14. [Output files](#output-files)
-15. [Limitations](#limitations)
-16. [Troubleshooting](#troubleshooting)
-17. [Security notes](#security-notes)
-18. [Roadmap](#roadmap)
-19. [License](#license)
+10. [How to read your results](#how-to-read-your-results)
+11. [Tuning guide](#tuning-guide)
+12. [Using your own documents](#using-your-own-documents)
+13. [Output files](#output-files)
+14. [Limitations](#limitations)
+15. [Troubleshooting](#troubleshooting)
+16. [Security notes](#security-notes)
+17. [Roadmap](#roadmap)
+18. [License](#license)
 
 ---
 
@@ -237,27 +236,6 @@ A chunk counts as **relevant** for Hit, Precision, Recall and MRR when its grade
 
 ---
 
-## Example results
-
-One run with `BAAI/bge-small-en-v1.5`, 120-word chunks, 30-word overlap, 30 golden questions:
-
-| Retriever | hit@1 | hit@5 | prec@5 | prec@10 | recall@5 | recall@10 | MRR | nDCG@5 | nDCG@10 |
-|-----------|------:|------:|-------:|--------:|---------:|----------:|----:|-------:|--------:|
-| BM25 | 0.867 | 1.000 | 0.467 | 0.330 | 0.663 | 0.847 | 0.933 | 0.790 | 0.808 |
-| Dense | 0.867 | 1.000 | 0.480 | 0.363 | 0.669 | 0.902 | 0.918 | 0.808 | 0.849 |
-| Hybrid (RRF) | 0.900 | 1.000 | 0.493 | 0.357 | 0.676 | 0.900 | 0.940 | 0.822 | 0.859 |
-| Hybrid + Rerank | 0.900 | 0.967 | 0.493 | 0.383 | 0.663 | **0.957** | 0.932 | **0.825** | **0.879** |
-
-**Takeaways**
-
-- Hybrid + Rerank finds the most relevant chunks within the top 10 (recall@10 0.957) and has the best nDCG.
-- At the very top (hit@1, MRR) the retrievers are close. Differences of one or two questions out of 30 are noise.
-- Moving from MiniLM to BGE embeddings improved every retriever that uses embeddings.
-
-These numbers come from a synthetic knowledge base and a small question set. Treat them as a demonstration, not a benchmark.
-
----
-
 ## How to read your results
 
 | You see | It probably means | What to try |
@@ -293,7 +271,7 @@ python retrieval_eval_final.py --hyde
 
 **Keep the grader fixed.** Relevance grades are cached in `judgments.json` by question and chunk text. If you switch the LLM grader between runs, delete `judgments.json` first so every run is graded by the same model.
 
-**Recommended production setup from these experiments:** hybrid retrieval, about 20 candidates, rerank, then pass the top 5 to 10 chunks to your LLM.
+**A common production setup:** hybrid retrieval, about 20 candidates, rerank, then pass the top 5 to 10 chunks to your LLM.
 
 ---
 
