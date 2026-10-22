@@ -6,3 +6,4 @@ judgments.json
 retrieval_results_run1.json
 retrieval_failures_run1.csv
 .deepeval/
+retrieval_testset.jsonl
