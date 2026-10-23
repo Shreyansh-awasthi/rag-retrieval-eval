@@ -1,30 +1,3 @@
-#!/usr/bin/env python3
-"""
-retrieval_eval_v2.py - Evaluate AND improve retrieval using YOUR golden dataset.
-
-Your golden dataset (golden_dataset.jsonl) has questions + answers + key_facts but no
-source chunks. So this script:
-  1. Builds a corpus from ./docs (.txt/.md). If there is none, it writes a synthetic
-     knowledge base from your golden questions (cached in ./docs_synth).
-  2. Chunks it (sentence-aware, with overlap).
-  3. Runs several retrievers, from basic to advanced:
-        BM25  ->  Dense embeddings  ->  Hybrid (RRF)  ->  Hybrid + Cross-encoder rerank
-        (+ optional HyDE query expansion with --hyde)
-  4. Pools every retrieved chunk and has the LLM grade each one against the
-     question / answer / key facts (0 = irrelevant, 1 = related, 2 = has the answer).
-     Grades are cached in judgments.json, so re-runs are cheap.
-  5. Reports Hit@k, Precision@k, Recall@k, MRR, nDCG@k and saves the misses of the best retriever.
-
-Setup:
-    pip install groq python-dotenv numpy sentence-transformers
-    .env file:  GROQ_API_KEY=your_key
-
-Run:
-    python retrieval_eval_v2.py
-    python retrieval_eval_v2.py --golden golden_dataset.jsonl --docs docs --hyde
-    python retrieval_eval_v2.py --chunk-size 80 --overlap 20 --limit 30
-"""
-
 import argparse
 import csv
 import glob
@@ -53,9 +26,6 @@ if not api_key:
 client = Groq(api_key=api_key)
 
 
-# =====================================================================
-# LLM helpers
-# =====================================================================
 def ask(prompt, max_tokens=3000, retries=3, temperature=0.2):
     for attempt in range(retries):
         try:
@@ -80,14 +50,10 @@ def parse_json_obj(text):
     except Exception:
         return None
 
-
 def md5(s):
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
 
-# =====================================================================
-# Golden dataset
-# =====================================================================
 def load_golden(path, limit):
     if not os.path.exists(path):
         raise SystemExit(f"Golden dataset not found: {path}")
@@ -111,10 +77,6 @@ def load_golden(path, limit):
         raise SystemExit("Golden dataset is empty. Run golden_dataset.py first.")
     return items
 
-
-# =====================================================================
-# Corpus + chunking
-# =====================================================================
 def generate_synthetic_corpus(golden, out_dir, group=4):
     os.makedirs(out_dir, exist_ok=True)
     topic = golden[0].get("topic", "artificial intelligence")
@@ -185,10 +147,6 @@ def build_chunks(docs, size, overlap):
             chunks.append({"id": len(chunks), "text": c, "source": name, "hash": md5(c)})
     return chunks
 
-
-# =====================================================================
-# Retrievers
-# =====================================================================
 STOP = set("a an the of to in and or is are was were be been for on with as by at from that this it its "
            "into than then so such can which how what why when who does do did not no".split())
 
@@ -371,9 +329,6 @@ def grade_pool(golden, chunks, rankings):
     return grades
 
 
-# =====================================================================
-# Metrics
-# =====================================================================
 def metrics_for(ranked, g):
     rel = {i for i, v in g.items() if v >= 2}
     first = next((r + 1 for r, i in enumerate(ranked) if i in rel), None)
@@ -414,9 +369,6 @@ def print_table(results):
         print(name.ljust(w) + "".join(f"{m.get(alias.get(c, c), 0):11.3f}" for c in cols))
 
 
-# =====================================================================
-# Main
-# =====================================================================
 def main():
     ap = argparse.ArgumentParser(description="Evaluate and improve retrieval with your golden dataset")
     ap.add_argument("--golden", default="golden_dataset.jsonl")
