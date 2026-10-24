@@ -1,6 +1,6 @@
 # Golden Dataset + RAG Retrieval Evaluation
 
-Build a **golden Q&A dataset** for any AI topic, then use it to **measure and improve retrieval** in a RAG (Retrieval-Augmented Generation) pipeline.
+Build a **golden Q&A dataset** for any  AI topic, then use it to **measure and improve retrieval** in a RAG (Retrieval-Augmented Generation) pipeline.
 
 The project has two tools:
 
