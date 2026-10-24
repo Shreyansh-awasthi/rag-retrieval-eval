@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""
-Golden Dataset Generator (Groq) - Rate Limit & OTPM Optimized version.
-Pipeline: Generate -> Dedupe -> Verify -> Export (JSONL + CSV)
-
-Setup:
-    pip install groq python-dotenv
-    Create a .env file next to this script containing ONE line:
-        GROQ_API_KEY=your_key_here
-"""
-
 import argparse
 import csv
 import json
@@ -45,7 +34,6 @@ DIFFICULTY_MIX = {"easy": 0.3, "medium": 0.4, "hard": 0.3}
 QUESTION_TYPES = ["factual", "conceptual", "comparison", "applied", "edge_case"]
 
 
-# ---------- helpers ----------
 def ask(prompt: str, max_tokens: int = 800, retries: int = 5) -> str:
     """Optimized ask wrapper with adaptive backoff and lower default max_tokens to stay below OTPM caps."""
     for attempt in range(retries):
@@ -56,11 +44,9 @@ def ask(prompt: str, max_tokens: int = 800, retries: int = 5) -> str:
                 max_tokens=max_tokens,
                 temperature=0.4,
             )
-            # Voluntarily back off slightly after every successful call to preserve token velocity
             time.sleep(3) 
             return resp.choices[0].message.content
         except Exception as e:
-            # Handle rate limits gracefully by adding progressive cooling periods
             wait_time = 15 * (attempt + 1)
             print(f"[warn] API error (attempt {attempt + 1}/{retries}). Waiting {wait_time}s. Error: {e}")
             time.sleep(wait_time)
@@ -74,7 +60,6 @@ def parse_json(text: str):
     return json.loads(text[start:end])
 
 
-# ---------- step 1: generate ----------
 def generate_batch(topic: str, count: int, difficulty: str) -> list[dict]:
     """Generates question-answer pairs. Uses strict formatting to control response length."""
     prompt = f"""You are building a GOLDEN evaluation dataset about: "{topic}".
@@ -116,7 +101,6 @@ def generate(topic: str, n: int) -> list[dict]:
     return items
 
 
-# ---------- step 2: dedupe ----------
 def dedupe(items: list[dict], threshold: float = 0.85) -> list[dict]:
     kept = []
     for it in items:
@@ -126,7 +110,6 @@ def dedupe(items: list[dict], threshold: float = 0.85) -> list[dict]:
     return kept
 
 
-# ---------- step 3: verify ----------
 def verify(topic: str, items: list[dict], min_score: int = 4) -> list[dict]:
     """Verifies items by chunking them into micro-payloads to respect free tier boundaries."""
     if not items:
@@ -169,7 +152,6 @@ Pairs to score:
     return good
 
 
-# ---------- step 4: export ----------
 def export(items: list[dict], topic: str, out: str):
     slug = re.sub(r"\W+", "_", topic.lower())[:20]
     for i, it in enumerate(items, 1):
@@ -191,7 +173,6 @@ def export(items: list[dict], topic: str, out: str):
     print(f"Saved {len(items)} items -> {out}.jsonl, {out}.csv")
 
 
-# ---------- main ----------
 def main():
     ap = argparse.ArgumentParser(description="Generate a golden dataset for any AI topic")
     ap.add_argument("--topic", default=None, help="e.g. 'Prompt Engineering' (random if omitted)")
