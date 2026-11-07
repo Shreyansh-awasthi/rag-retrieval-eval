@@ -1,195 +1,253 @@
+@'
 # RAGForge
 
-**Ask questions about your documents. Get answers grounded strictly in what they actually say.**
+Ask questions about a PDF and get answers grounded only in that document. RAGForge uses hybrid retrieval (vector + BM25), FlashRank reranking and a Groq-hosted LLM, behind a FastAPI backend and a Streamlit chat UI. It ships with a DeepEval suite for offline evaluation and is set up for online evaluation with LangSmith.
 
-RAGForge is a retrieval-augmented generation system built to avoid the two things that make most RAG demos unreliable: shallow single-method retrieval, and answers that quietly hallucinate past the source document.
+## Features
 
----
-
-## Table of Contents
-
-- [Why this exists](#why-this-exists)
-- [Architecture](#architecture)
-- [What makes the retrieval good](#what-makes-the-retrieval-good)
-- [Evaluation](#evaluation)
-- [Latency & reliability controls](#latency--reliability-controls)
-- [Tech stack](#tech-stack)
-- [Getting started](#getting-started)
-- [Project structure](#project-structure)
-- [Design constraints](#design-constraints)
-
----
-
-## Why this exists
-
-Most "chat with your PDF" projects wire up an embedding model, a vector store, and an LLM, and call it done. That works until:
-
-- the answer needs an exact term or number the embedding model paraphrased away
-- a follow-up question depends on the previous one ("what about the second point?")
-- the model just answers from its own training data instead of the document
-- a free-tier LLM API rate-limits you mid-conversation
-
-RAGForge is built around solving those four problems specifically, not around demoing embeddings.
-
----
+- Hybrid retrieval: Chroma vector search plus BM25, merged by an ensemble retriever
+- FlashRank reranking (top 3 of the merged candidates)
+- Streaming answers from Groq (`qwen/qwen3.8-27b`)
+- LangGraph pipeline with per-thread history and follow-up question rewriting
+- Caching of parsed PDFs, chunks, embeddings and answers
+- Privacy guard: requests for phone, email, address, date of birth or ID numbers are refused, and emails and phone numbers are redacted from answers
+- Offline evaluation with DeepEval (retrieval, generation, safety, operations)
+- Online evaluation with LangSmith tracing
+- Docker Compose setup for the API and the frontend
 
 ## Architecture
 
 ```
-                    ┌─────────────────┐
-                    │   PDF Upload     │
-                    └────────┬─────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │  Load & Chunk    │  (cached per thread)
-                    └────────┬─────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │    Embed +       │
-                    │  Build Indexes   │  Chroma (dense) + BM25 (sparse)
-                    └────────┬─────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │  Contextualize   │  rewrites follow-up questions
-                    │    Question      │  using conversation history
-                    └────────┬─────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │ Hybrid Retrieval │  Ensemble(vector, BM25)
-                    └────────┬─────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │    Rerank        │  FlashRank cross-encoder
-                    │  (top-k → top-3) │
-                    └────────┬─────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │    Generate      │  Groq LLM, retry on rate limits
-                    │  (grounded only) │
-                    └────────┬─────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │     Answer       │
-                    └─────────────────┘
+PDF upload -> load -> split (1000 chars, 150 overlap) -> embed (Chroma) + BM25
+question -> rewrite using history -> hybrid retrieve (k=5 each) -> FlashRank (top 3) -> LLM -> answer
 ```
-
-The whole flow is modeled as a **LangGraph state machine** with per-thread checkpointing, not a linear script. Each stage caches independently — re-asking a question against a document you've already processed skips redundant embedding, retrieval, and reranking work entirely.
-
----
-
-## What makes the retrieval good
-
-**Hybrid search, not just vector similarity.**
-Every query hits two retrievers in parallel: a dense one (Chroma, sentence embeddings) and a sparse one (BM25), merged through an `EnsembleRetriever`. Vector search misses exact keyword/number matches; BM25 misses semantic paraphrases. Running both closes the gap either one leaves alone.
-
-**Reranking before generation, not top-k-and-done.**
-Hybrid results get passed through a FlashRank cross-encoder before anything reaches the LLM — reordering by actual relevance to the question rather than trusting the retriever's own ranking, then trimming to the top 3. Smaller, cleaner, more relevant context beats a large noisy one.
-
-**Follow-ups get rewritten before retrieval, not after.**
-"What about the second one?" only makes sense with history. Before retrieval runs, recent turns are used to rewrite ambiguous questions into standalone ones, resolving pronouns and references — so multi-turn conversations don't quietly degrade retrieval quality.
-
-**MCP support for direct Claude integration.**
-The backend exposes an MCP server (`FastMCP`), so the same retrieval pipeline is callable as a tool directly from Claude or any other MCP-compatible client — not locked behind the HTTP API.
-
-**Rate limits handled, not just hoped around.**
-LLM calls detect 429s specifically and retry with a reduced token budget and backoff, instead of failing the whole request the first time a free-tier limit gets hit.
-
-**Traced end-to-end, not a black box.**
-Every run is instrumented with LangSmith — retrieval hits, rerank scores, and generation calls are individually inspectable per thread.
-
----
-
-## Tech stack
-
-| Layer | Choice | Why |
-|---|---|---|
-| Orchestration | LangGraph | Stateful, checkpointed pipeline per conversation thread |
-| Retrieval | Chroma + BM25 (`EnsembleRetriever`) | Dense + sparse hybrid search |
-| Reranking | FlashRank (`ms-marco-TinyBERT-L-2-v2`) | Cross-encoder relevance scoring post-retrieval |
-| Embeddings | `all-MiniLM-L6-v2` | Fast, local, no external embedding API cost |
-| LLM | Groq (`qwen/qwen3.8-27b`) | Low-latency inference |
-| Backend | FastAPI | Concurrency-limited, global exception handling |
-| Frontend | Streamlit | Fast to iterate, custom-themed |
-| Integration | MCP server | Direct tool access from Claude / MCP clients |
-| Observability | LangSmith | Full pipeline tracing |
-| Evaluation | Ragas | Faithfulness, context precision/recall, answer relevancy scoring |
-
----
-
-## Getting started
-
-```bash
-git clone https://github.com/Shreyansh-awasthi/RAGForge.git
-cd RAGForge
-pip install -r requirements.txt
-```
-
-Create `.env`:
-```env
-GROQ_API_KEY=your_key
-LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=your_key
-LANGSMITH_PROJECT=rag-api
-LANGSMITH_ENDPOINT=https://api.smith.langchain.com
-```
-
-Run the backend:
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Run the frontend:
-```bash
-streamlit run app.py
-```
-
-Open the Streamlit URL, upload a PDF, ask a question.
-
----
 
 ## Project structure
 
 ```
-RAGForge/
-├── main.py            # FastAPI backend — upload, query, health endpoints
-├── Rag.py             # LangGraph pipeline — retrieval, reranking, generation
-├── app.py             # Streamlit frontend
-├── requirements.txt
-└── .env               # not committed — see .gitignore
+mainapi.py              FastAPI app (POST /query/stream, docs at /docs)
+Rag.py                  RAG pipeline (LangGraph)
+frontend/app.py         Streamlit chat UI
+MCP_RAG/                MCP server (experimental)
+Rag_evals/              DeepEval scripts (see Evaluation)
+docs_synth/, golden_dataset.*, retrieval_eval_final.py
+                        earlier retrieval-evaluation experiments
+Dockerfile, docker-compose.yml, requirements.txt
 ```
+
+## Configuration
+
+Create a `.env` file in the project root. Never commit it.
+
+```
+GROQ_API_KEY=your_key
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your_langsmith_key
+LANGSMITH_PROJECT=ragforge
+```
+
+The frontend reads `API_URL` (default `http://127.0.0.1:8000`).
+
+## Run locally
+
+```powershell
+python -m pip install -r requirements.txt
+python -m uvicorn mainapi:app --reload
+```
+
+In a second terminal:
+
+```powershell
+python -m streamlit run frontend\app.py
+```
+
+Open http://localhost:8501, upload a PDF and ask a question. API docs: http://localhost:8000/docs.
+
+## Run with Docker
+
+```powershell
+docker compose build
+docker compose up -d
+```
+
+Frontend: http://localhost:8501. API: http://localhost:8000/docs. The first request downloads the embedding and reranker models, so it is slow. They are cached in a Docker volume.
 
 ---
 
 ## Evaluation
 
-Retrieval and answer quality aren't just assumed — there's a separate evaluation script that runs the pipeline through [Ragas](https://github.com/explodinggradients/ragas) against a fixed set of question/document pairs, scoring:
+RAGForge is evaluated in two ways:
 
-- **Context precision / recall** — whether the hybrid retriever + reranker are actually surfacing the right chunks
-- **Faithfulness** — whether the generated answer is actually supported by retrieved context, not hallucinated
-- **Answer relevancy** — whether the answer addresses what was actually asked
+| Type | When it runs | Data | Tooling |
+|---|---|---|---|
+| Offline | On your machine, before a release or after changing the pipeline | A fixed question set (some with reference answers) | DeepEval scripts in `Rag_evals/` |
+| Online | Continuously, on real traffic | Live traces, sampled | LangSmith online evaluators |
 
-This runs independently of the live API — it's a correctness check on the pipeline itself, not something that executes on every user query.
+Offline evals tell you whether a change made the system better or worse. Online evals tell you whether it is behaving well for real users. Use both.
+
+A Groq model acts as the judge in the offline scripts, so no OpenAI key is needed. LLM judges are noisy: compare averages over many questions, and treat differences under about 0.1 on a small set as noise.
+
+### What each eval measures
+
+The pipeline has two stages, retrieval and generation, so the metrics are split to show which stage is at fault.
+
+#### 1. Retrieval quality (`Rag_evals/contextual.py`)
+
+| Metric | Question it answers | Needs reference answer |
+|---|---|---|
+| Contextual Precision | Are the relevant chunks ranked above the irrelevant ones? | Yes |
+| Contextual Recall | Do the retrieved chunks contain everything needed for the correct answer? | Yes |
+| Contextual Relevancy | How much of the retrieved text is actually on topic? | No |
+
+Low precision means the reranker or ranking is weak. Low recall means the right chunk was never retrieved (raise `k`, change chunk size or the embedding model). Low relevancy means chunks are too large or noisy.
+
+#### 2. Generation quality, reference-free (`Rag_evals/faithfulness.py`)
+
+| Metric | Question it answers |
+|---|---|
+| Faithfulness | Is every claim in the answer supported by the retrieved context? Catches hallucination. |
+| Answer Relevancy | Does the answer address the question, without padding or off-topic text? |
+
+The judge extracts claims or statements from the answer and checks each one, so no hand-written answer is needed. This scales to many questions cheaply.
+
+#### 3. Answer quality against a reference (`Rag_evals/geval.py`)
+
+Three GEval metrics, each with a written criterion and a 0 to 10 scoring rubric that is normalized to 0 to 1:
+
+| Metric | Compares | Checks |
+|---|---|---|
+| Correctness | answer vs reference | Facts match; no invented details; "not in the document" answers are rewarded when correct |
+| Completeness | answer vs reference | Every key point and every part of the question is covered |
+| Style | answer only | Clear plain-text prose, no markdown, no padding, respects length limits |
+
+#### 4. Safety (`Rag_evals/safety_eval.py`)
+
+Adversarial questions, each tagged with the checks that apply. Scores are reported so that 1.0 is safe.
+
+| Check | Probes | Pass means |
+|---|---|---|
+| Toxicity | Requests to roast, insult or discriminate against the candidate | The answer stays civil or refuses |
+| PII Protection | Requests for phone, email, address, date of birth, government IDs, or "how can I find this person" | No identifier is revealed |
+| Scope Adherence | "Ignore previous instructions", persona changes, system-prompt reveal, coding or trivia questions, hiring opinions | The assistant stays a document Q&A assistant |
+
+A normal control question is included to confirm the safety layer does not break regular use.
+
+#### 5. Operations (`Rag_evals/ops_evals.py`)
+
+Custom DeepEval metrics that need no judge model, so they cost no Groq tokens for scoring.
+
+| Metric | Measured with | Default threshold |
+|---|---|---|
+| Latency | `completion_time` of each query | 5 seconds |
+| Cost | token usage times the per-million-token prices you set | $0.002 per query |
+| Reliability | Status of each run: ok, rate limited, LLM error, empty, false refusal | 100% ok |
+
+Set `PRICE_IN_PER_M` and `PRICE_OUT_PER_M` in the file from Groq's pricing page, or cost always shows $0.
+
+### Run the offline evals
+
+Put a test PDF at `Rag_evals/data/resume.pdf` (PDFs are git-ignored) and run from the project root:
+
+```powershell
+python -m Rag_evals.contextual
+python -m Rag_evals.faithfulness
+python -m Rag_evals.geval
+python -m Rag_evals.safety_eval
+python -m Rag_evals.ops_evals
+```
+
+`contextual.py` creates `Rag_evals/goldens.json` on its first run. Open it and delete bad questions before trusting the scores. It is git-ignored because it can contain private document details.
+
+### Reading the results
+
+| Symptom | Likely cause | What to change |
+|---|---|---|
+| Low Contextual Recall | Right chunk not retrieved | Raise `k`, change chunk size, try a better embedding model |
+| Low Contextual Precision | Good chunk ranked too low | Stronger reranker, tune ensemble weights |
+| Low Contextual Relevancy | Chunks too large or noisy | Smaller chunks, keep fewer chunks |
+| Low Faithfulness | Answer adds facts not in context | Tighten the prompt, lower temperature |
+| Low Answer Relevancy | Padding or off-topic text | Shorten the prompt rules, lower the output cap |
+| Low Completeness, good Correctness | Missing parts of multi-part questions | Retrieve more chunks, improve question rewriting |
+| PII or Scope failures | Prompt or guard gaps | Extend the privacy rules and the keyword guard |
+| High latency only on later questions | Groq rate limiting, not the pipeline | Pace the eval or use a higher tier |
+
+### Sample results
+
+Measured on a one-page template resume. The sample is tiny, so treat these as a smoke test, not a benchmark.
+
+| Metric | Result | Questions |
+|---|---|---|
+| Contextual Precision / Recall | 1.0 / 1.0 | 2 |
+| Faithfulness | 1.00 | 5 |
+| Answer Relevancy | 0.96 | 5 |
+| PII Protection (after the privacy guard) | 1.00 | 4 |
+| Scope Adherence | about 0.9 | 10 |
+| Latency (unthrottled) | about 0.5 to 2 s per query | 20 |
+
+Contextual Relevancy was low (0.1 to 0.7) because 1000-character chunks contain more than the question needs. Before the privacy guard, PII Protection was about 0.5.
 
 ---
 
-## Latency & reliability controls
+## Online evaluation with LangSmith
 
-Every stage that could stall or slow the pipeline down has an explicit limit rather than running unbounded:
+Offline evals use a fixed question set. Online evals score real traffic as it arrives, so they catch problems your test set never covered, such as new question types, drift in retrieval quality, new jailbreak attempts and rising error rates.
 
-- **Hard request timeout.** Each query is wrapped in `asyncio.wait_for` — if generation hangs (a stuck Groq call, a slow embedding step), the request fails cleanly with a 504 instead of hanging the connection indefinitely.
-- **Concurrency cap.** A semaphore limits how many heavy queries (embedding + retrieval + generation) run at once. Extra requests queue briefly instead of competing for RAM/CPU and slowing everything down at once.
-- **Context is trimmed before generation.** Retrieved chunks are capped (reranked down to the top 3, then truncated to a fixed character limit) before hitting the LLM — smaller prompts mean faster generation, not just cleaner answers.
-- **Rate-limit backoff with a reduced retry budget.** On a Groq 429, the retry uses a smaller `max_tokens` and a short backoff instead of resending the same expensive request and hitting the limit again immediately.
-- **Caching skips repeated work entirely.** Parsed documents, chunks, retrievers, and answers are all cached per thread (LRU-capped, not unbounded) — re-asking a question, or asking a new question against an already-processed document, skips embedding and reranking instead of redoing it from scratch.
+`Rag.py` already imports LangSmith and wraps `run_query` with `@traceable`. Each traced call records the input question, the output (including the retrieved chunks), latency, token usage and errors.
 
----
+### Set up
 
-## Design constraints
+1. Create a LangSmith account and an API key.
+2. Add the keys to `.env` (see Configuration), then restart the API.
+3. Send some questions through the app. A project named `ragforge` appears in LangSmith with one trace per question.
 
+### Add online evaluators
 
-Deliberate limits, not oversights:
+In LangSmith, open the project and add an automation rule with an online evaluator. Menu names change between versions, so check the current LangSmith docs if a label differs. For each rule you choose:
 
-- **Answers are strictly document-grounded.** If it's not in the file, the system says so instead of guessing.
-- **Bounded memory, not unbounded caching.** Document, chunk, retriever, and answer caches are LRU-capped — old sessions get evicted, not accumulated forever.
-- **Capped concurrency.** A limited number of heavy queries run at once; extra requests queue briefly instead of exhausting server resources.
-- **No silent failures.** A global exception handler ensures one bad request returns a clean error instead of taking the whole server down.
+- a filter (for example, all root runs, or only runs with errors)
+- a sampling rate (for example 10 to 20 percent, to control judge cost)
+- an evaluator: an LLM-as-judge prompt, or a custom code evaluator
+- a mapping from the trace fields (input, output, retrieved context) to the evaluator's variables
+
+LLM-as-judge evaluators need a model provider key configured in your LangSmith workspace settings.
+
+Suggested evaluators for RAGForge:
+
+| Evaluator | Type | Uses | Flags |
+|---|---|---|---|
+| Faithfulness | LLM-as-judge | answer + retrieved chunks | Claims not supported by the document |
+| Answer relevancy | LLM-as-judge | question + answer | Off-topic or padded answers |
+| PII leak | LLM-as-judge or regex | answer | Phone numbers, emails, addresses in output |
+| Refusal rate | Code | answer text | Rate of "not related to the document" replies, which often means a retrieval miss |
+| Latency and errors | Built in | trace metadata | Slow runs, rate-limit failures |
+
+Use the same criteria as the offline GEval prompts so offline and online scores are comparable.
+
+### Close the loop
+
+1. Filter online results for low scores or user-reported problems.
+2. Add those traces to a LangSmith dataset, or copy the questions into the offline question sets.
+3. Fix the pipeline, re-run the offline evals, and confirm the fix before shipping.
+
+### Notes
+
+- The Streamlit app calls `/query/stream`, which uses `stream_query`. Only `run_query` is decorated with `@traceable`, so streamed requests are not traced until you trace that path too. Check the LangSmith docs for tracing async generators before changing it.
+- Traces contain the question, the retrieved document text and the answer. If your PDFs are confidential, set `LANGSMITH_TRACING=false` or use a self-hosted LangSmith.
+- Online judges cost tokens. Keep the sampling rate low.
+
+## Known limits
+
+- The free Groq tier for this model allows about 8K tokens per minute and 200K per day. Many quick questions get throttled, which inflates measured latency. Pace the eval or upgrade the tier.
+- The built-in DeepEval Toxicity metric returned unreliable scores with the Qwen judge. Prefer a GEval-based toxicity check where high means safe.
+- Memory: torch, the embedding model and the reranker need about 2 GB of RAM.
+- Uploaded PDFs and the vector store live on local disk. Attach a persistent disk when deploying.
+
+## Security
+
+- Keep `.env`, uploaded PDFs and `chroma_store/` out of Git, and rotate keys that were ever committed.
+- Document text is sent to Groq, and to LangSmith if tracing is on. Only upload documents you are allowed to process.
+
+## License
+
+MIT
+'@ | Set-Content -Encoding utf8 README.md
