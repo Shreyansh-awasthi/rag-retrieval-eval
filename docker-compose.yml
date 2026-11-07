@@ -1,0 +1,37 @@
+services:
+  api:
+    build: .
+    container_name: ragforge-api
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploaded_docs:/app/uploaded_docs
+      - chroma_store:/app/chroma_store
+      - hf_cache:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+
+  frontend:
+    build: .
+    container_name: ragforge-frontend
+    command: ["python", "-m", "streamlit", "run", "frontend/app.py",
+              "--server.port=8501", "--server.address=0.0.0.0"]
+    environment:
+      - API_URL=http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  uploaded_docs:
+  chroma_store:
+  hf_cache:

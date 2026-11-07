@@ -1,0 +1,15 @@
+.env
+.git
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.pyc
+chroma_store/
+uploaded_docs/
+.deepeval/
+Rag_evals/goldens.json
+Rag_evals/data/
+*.pdf
+.claude.json
+*.bak
