@@ -6,11 +6,11 @@ venv/
 chroma_store/
 uploaded_docs/
 *.log
-.env
-uploaded_docs/
-chroma_store/
 .deepeval/
-__pycache__/
 *.pdf
 Rag_evals/goldens.json
 *.bak
+judgments.json
+retrieval_results_run1.json
+retrieval_failures_run1.csv
+retrieval_testset.jsonl
